@@ -1,5 +1,5 @@
 const CACHE_VERSION =
-  "softstreer-v14";
+  "softstreet-v15";
 
 const CORE_CACHE =
   `${CACHE_VERSION}-core`;
@@ -58,7 +58,10 @@ self.addEventListener(
           return Promise.all(
             cacheNames.map(
               (cacheName) => {
-                const isSoftStreer =
+                const isSoftStreet =
+                  cacheName.startsWith(
+                    "softstreet-"
+                  ) ||
                   cacheName.startsWith(
                     "softstreer-"
                   );
@@ -70,7 +73,7 @@ self.addEventListener(
                     ASSET_CACHE;
 
                 if (
-                  isSoftStreer &&
+                  isSoftStreet &&
                   !isCurrent
                 ) {
                   return caches.delete(
