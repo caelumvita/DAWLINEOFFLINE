@@ -1,6 +1,12 @@
 import * as THREE from "three";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { SAOPass } from "three/addons/postprocessing/SAOPass.js";
+import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+import { FXAAShader } from "three/addons/shaders/FXAAShader.js";
 
 /* =========================================================
    FILES
@@ -66,6 +72,11 @@ const SIDEWALK_WIDTH = 4.3;
 
 const DRINK_DURATION = 4;
 
+const STREET_LIGHT_Z = [-36, -12, 12, 36];
+const CINEMATIC_AO_ENABLED =
+  !window.matchMedia("(pointer: coarse)").matches &&
+  (navigator.deviceMemory ?? 8) >= 4;
+
 /* =========================================================
    HTML
 ========================================================= */
@@ -80,6 +91,7 @@ const joystick = document.getElementById("joystick");
 const joystickStick = document.getElementById("joystickStick");
 const lookZone = document.getElementById("lookZone");
 const drinkButton = document.getElementById("drinkButton");
+const graphicsButton = document.getElementById("graphicsButton");
 
 const isMobile =
   window.matchMedia("(pointer: coarse)").matches ||
@@ -132,8 +144,8 @@ window.addEventListener("unhandledrejection", (event) => {
 
 const scene = new THREE.Scene();
 
-scene.background = new THREE.Color(0x7895a8);
-scene.fog = new THREE.Fog(0x7895a8, 75, 195);
+scene.background = new THREE.Color(0x657c8c);
+scene.fog = new THREE.FogExp2(0x657887, 0.0065);
 
 const renderer = new THREE.WebGLRenderer({
   antialias: true,
@@ -143,7 +155,7 @@ const renderer = new THREE.WebGLRenderer({
 renderer.setSize(window.innerWidth, window.innerHeight);
 
 renderer.setPixelRatio(
-  Math.min(window.devicePixelRatio, 1.5)
+  Math.min(window.devicePixelRatio, isMobile ? 1.2 : 1.5)
 );
 
 renderer.shadowMap.enabled = true;
@@ -151,9 +163,13 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.92;
+renderer.toneMappingExposure = 1.04;
 
 document.body.appendChild(renderer.domElement);
+
+const CINEMATIC_AO_AVAILABLE =
+  CINEMATIC_AO_ENABLED &&
+  renderer.capabilities.isWebGL2;
 
 /* =========================================================
    PLAYER AND CAMERA
@@ -181,34 +197,205 @@ let yaw = 0;
 let pitch = 0;
 
 /* =========================================================
+   CINEMATIC POST-PROCESSING
+========================================================= */
+
+const composer = new EffectComposer(renderer);
+
+composer.setPixelRatio(
+  Math.min(window.devicePixelRatio, isMobile ? 1.1 : 1.35)
+);
+
+composer.setSize(window.innerWidth, window.innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+
+const saoPass = new SAOPass(
+  scene,
+  camera,
+  new THREE.Vector2(
+    window.innerWidth,
+    window.innerHeight
+  )
+);
+
+saoPass.params.saoBias = 0.35;
+saoPass.params.saoIntensity = 0.055;
+saoPass.params.saoScale = 18;
+saoPass.params.saoKernelRadius = 26;
+saoPass.params.saoMinResolution = 0.001;
+saoPass.params.saoBlur = true;
+saoPass.params.saoBlurRadius = 5;
+saoPass.params.saoBlurStdDev = 2.4;
+saoPass.params.saoBlurDepthCutoff = 0.012;
+saoPass.enabled = CINEMATIC_AO_AVAILABLE;
+
+composer.addPass(saoPass);
+
+const cinematicShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    uTime: { value: 0 },
+    uResolution: {
+      value: new THREE.Vector2(
+        window.innerWidth,
+        window.innerHeight
+      )
+    },
+    uStrength: { value: isMobile ? 0.68 : 1 }
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float uTime;
+    uniform vec2 uResolution;
+    uniform float uStrength;
+
+    varying vec2 vUv;
+
+    float luminance(vec3 color) {
+      return dot(color, vec3(0.2126, 0.7152, 0.0722));
+    }
+
+    float hash(vec2 point) {
+      return fract(sin(dot(point, vec2(12.9898, 78.233))) * 43758.5453);
+    }
+
+    void main() {
+      vec3 color = texture2D(tDiffuse, vUv).rgb;
+      vec2 texel = 1.0 / max(uResolution, vec2(1.0));
+
+      vec3 glow = vec3(0.0);
+      glow += texture2D(tDiffuse, vUv + vec2(texel.x * 2.0, 0.0)).rgb;
+      glow += texture2D(tDiffuse, vUv - vec2(texel.x * 2.0, 0.0)).rgb;
+      glow += texture2D(tDiffuse, vUv + vec2(0.0, texel.y * 2.0)).rgb;
+      glow += texture2D(tDiffuse, vUv - vec2(0.0, texel.y * 2.0)).rgb;
+      glow *= 0.25;
+
+      float glowMask = smoothstep(0.68, 1.35, luminance(glow));
+      color += glow * glowMask * 0.045 * uStrength;
+
+      float lightness = luminance(color);
+      color = mix(vec3(lightness), color, 1.055);
+      color = (color - 0.5) * 1.035 + 0.5;
+
+      vec3 coolShadow = vec3(-0.018, -0.006, 0.028);
+      vec3 warmLight = vec3(0.027, 0.012, -0.010);
+      color += mix(coolShadow, warmLight, smoothstep(0.12, 0.82, lightness)) * uStrength;
+
+      vec2 centered = vUv - 0.5;
+      float vignette = smoothstep(0.78, 0.27, dot(centered, centered));
+      color *= mix(0.86, 1.0, mix(1.0, vignette, uStrength));
+
+      float grain = hash(vUv * uResolution + fract(uTime) * 91.7) - 0.5;
+      color += grain * 0.008 * uStrength;
+
+      gl_FragColor = vec4(max(color, 0.0), 1.0);
+    }
+  `
+};
+
+const cinematicPass = new ShaderPass(cinematicShader);
+composer.addPass(cinematicPass);
+
+const fxaaPass = new ShaderPass(FXAAShader);
+
+function updatePostProcessingSize() {
+  const pixelRatio = Math.min(
+    window.devicePixelRatio,
+    isMobile ? 1.1 : 1.35
+  );
+
+  composer.setPixelRatio(pixelRatio);
+  composer.setSize(window.innerWidth, window.innerHeight);
+
+  fxaaPass.material.uniforms.resolution.value.set(
+    1 / (window.innerWidth * pixelRatio),
+    1 / (window.innerHeight * pixelRatio)
+  );
+
+  cinematicPass.uniforms.uResolution.value.set(
+    window.innerWidth * pixelRatio,
+    window.innerHeight * pixelRatio
+  );
+}
+
+updatePostProcessingSize();
+composer.addPass(fxaaPass);
+composer.addPass(new OutputPass());
+
+let cinematicEffectsEnabled = true;
+
+function updateGraphicsButton() {
+  if (!graphicsButton) {
+    return;
+  }
+
+  graphicsButton.textContent = cinematicEffectsEnabled
+    ? "✨ Кіно"
+    : "⚡ Швидко";
+
+  graphicsButton.setAttribute(
+    "aria-pressed",
+    String(cinematicEffectsEnabled)
+  );
+}
+
+function toggleCinematicEffects() {
+  cinematicEffectsEnabled = !cinematicEffectsEnabled;
+  cinematicPass.enabled = cinematicEffectsEnabled;
+  saoPass.enabled =
+    cinematicEffectsEnabled && CINEMATIC_AO_AVAILABLE;
+  updateGraphicsButton();
+}
+
+graphicsButton?.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  toggleCinematicEffects();
+});
+
+updateGraphicsButton();
+
+/* =========================================================
    LIGHTING
 ========================================================= */
 
 const hemisphereLight = new THREE.HemisphereLight(
-  0xd7ecff,
-  0x343c2e,
-  0.9
+  0xbfd8ee,
+  0x25291f,
+  0.52
 );
 
 scene.add(hemisphereLight);
 
 const sun = new THREE.DirectionalLight(
-  0xffd6ab,
-  2.25
+  0xffc98e,
+  3.15
 );
 
-sun.position.set(-42, 62, 36);
+sun.position.set(-48, 54, 28);
 sun.castShadow = true;
 
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(
+  isMobile ? 2048 : 4096,
+  isMobile ? 2048 : 4096
+);
 sun.shadow.camera.near = 1;
-sun.shadow.camera.far = 190;
-sun.shadow.camera.left = -65;
-sun.shadow.camera.right = 65;
-sun.shadow.camera.top = 65;
-sun.shadow.camera.bottom = -65;
-sun.shadow.bias = -0.00015;
-sun.shadow.normalBias = 0.025;
+sun.shadow.camera.far = 150;
+sun.shadow.camera.left = -48;
+sun.shadow.camera.right = 48;
+sun.shadow.camera.top = 58;
+sun.shadow.camera.bottom = -58;
+sun.shadow.bias = -0.00008;
+sun.shadow.normalBias = 0.03;
+sun.shadow.radius = 3;
 
 sun.target.position.set(0, 0, 0);
 
@@ -216,11 +403,19 @@ scene.add(sun);
 scene.add(sun.target);
 
 const ambientLight = new THREE.AmbientLight(
-  0x8fa6b6,
-  0.12
+  0x6d8190,
+  0.08
 );
 
 scene.add(ambientLight);
+
+const coolFillLight = new THREE.DirectionalLight(
+  0x7899bd,
+  0.22
+);
+
+coolFillLight.position.set(36, 22, -32);
+scene.add(coolFillLight);
 
 /* =========================================================
    TEXTURE HELPERS
@@ -258,6 +453,19 @@ function prepareRepeatingTexture(
   return texture;
 }
 
+function createReliefTexture(texture) {
+  const reliefTexture = texture.clone();
+
+  reliefTexture.colorSpace = THREE.NoColorSpace;
+  reliefTexture.wrapS = texture.wrapS;
+  reliefTexture.wrapT = texture.wrapT;
+  reliefTexture.repeat.copy(texture.repeat);
+  reliefTexture.anisotropy = texture.anisotropy;
+  reliefTexture.needsUpdate = true;
+
+  return reliefTexture;
+}
+
 /* =========================================================
    SKY
 ========================================================= */
@@ -277,6 +485,9 @@ async function loadSky() {
     scene.background = texture;
     scene.environment =
       generator.fromEquirectangular(texture).texture;
+
+    scene.backgroundIntensity = 0.78;
+    scene.environmentIntensity = 0.52;
 
     console.log("Sky loaded");
   } catch (error) {
@@ -320,6 +531,8 @@ async function loadGrass() {
     prepareRepeatingTexture(texture, 10, 14);
 
     grassMaterial.map = texture;
+    grassMaterial.bumpMap = createReliefTexture(texture);
+    grassMaterial.bumpScale = 0.16;
     grassMaterial.color.set(0xffffff);
     grassMaterial.needsUpdate = true;
 
@@ -367,6 +580,8 @@ async function loadConcrete() {
     prepareRepeatingTexture(texture, 1.4, 20);
 
     concreteMaterial.map = texture;
+    concreteMaterial.bumpMap = createReliefTexture(texture);
+    concreteMaterial.bumpScale = 0.055;
     concreteMaterial.color.set(0xffffff);
     concreteMaterial.needsUpdate = true;
 
@@ -375,6 +590,195 @@ async function loadConcrete() {
     console.error("Concrete error:", error);
   }
 }
+
+/* =========================================================
+   STREET, CURBS AND WARM LANTERNS
+========================================================= */
+
+const roadMaterial = new THREE.MeshStandardMaterial({
+  color: 0x252a2d,
+  roughness: 0.86,
+  metalness: 0.04
+});
+
+const road = new THREE.Mesh(
+  new THREE.BoxGeometry(
+    11.45,
+    0.08,
+    BASE_LENGTH - 2
+  ),
+  roadMaterial
+);
+
+road.position.set(0, 0.01, 0);
+road.receiveShadow = true;
+scene.add(road);
+
+const curbMaterial = new THREE.MeshStandardMaterial({
+  color: 0x8d9190,
+  roughness: 0.84,
+  metalness: 0.02
+});
+
+for (const x of [-5.82, 5.82]) {
+  const curb = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      0.26,
+      0.22,
+      BASE_LENGTH - 3
+    ),
+    curbMaterial
+  );
+
+  curb.position.set(x, 0.11, 0);
+  curb.castShadow = true;
+  curb.receiveShadow = true;
+  scene.add(curb);
+}
+
+const markingMaterial = new THREE.MeshStandardMaterial({
+  color: 0xc6b986,
+  emissive: 0x4a3b17,
+  emissiveIntensity: 0.12,
+  roughness: 0.78
+});
+
+for (let z = -43; z <= 43; z += 9) {
+  const marking = new THREE.Mesh(
+    new THREE.BoxGeometry(0.14, 0.025, 4.2),
+    markingMaterial
+  );
+
+  marking.position.set(0, 0.07, z);
+  marking.receiveShadow = true;
+  scene.add(marking);
+}
+
+const lampPoleMaterial = new THREE.MeshStandardMaterial({
+  color: 0x22282b,
+  roughness: 0.46,
+  metalness: 0.72
+});
+
+const lampGlassMaterial = new THREE.MeshStandardMaterial({
+  color: 0xffd89a,
+  emissive: 0xffa63b,
+  emissiveIntensity: 4.2,
+  roughness: 0.18,
+  metalness: 0.02
+});
+
+const lampPoolMaterial = new THREE.MeshBasicMaterial({
+  color: 0xffc56c,
+  transparent: true,
+  opacity: 0.105,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  side: THREE.DoubleSide
+});
+
+const streetLightBulbs = [];
+
+function createStreetLight(side, z) {
+  const group = new THREE.Group();
+  const x = side * 6.55;
+
+  const pole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.075, 0.11, 4.65, 10),
+    lampPoleMaterial
+  );
+
+  pole.position.y = 2.42;
+  pole.castShadow = true;
+  pole.receiveShadow = true;
+  group.add(pole);
+
+  const arm = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.06, 0.06, 0.78, 10),
+    lampPoleMaterial
+  );
+
+  arm.position.set(-side * 0.34, 4.7, 0);
+  arm.rotation.z = Math.PI / 2;
+  arm.castShadow = true;
+  group.add(arm);
+
+  const shade = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.22, 0.34, 0.2, 16),
+    lampPoleMaterial
+  );
+
+  shade.position.set(-side * 0.72, 4.57, 0);
+  shade.castShadow = true;
+  group.add(shade);
+
+  const bulb = new THREE.Mesh(
+    new THREE.SphereGeometry(0.145, 16, 10),
+    lampGlassMaterial
+  );
+
+  bulb.position.set(-side * 0.72, 4.43, 0);
+  group.add(bulb);
+  streetLightBulbs.push(bulb);
+
+  const light = new THREE.PointLight(
+    0xffb45c,
+    isMobile ? 34 : 48,
+    13,
+    2
+  );
+
+  light.position.copy(bulb.position);
+  group.add(light);
+
+  const pool = new THREE.Mesh(
+    new THREE.CircleGeometry(3.35, 32),
+    lampPoolMaterial
+  );
+
+  pool.rotation.x = -Math.PI / 2;
+  pool.position.set(-side * 0.42, 0.205, 0);
+  group.add(pool);
+
+  group.position.set(x, 0, z);
+  scene.add(group);
+
+  addColliderFromObject(pole);
+}
+
+const atmosphereGeometry = new THREE.BufferGeometry();
+const atmospherePositions = [];
+
+for (let index = 0; index < (isMobile ? 55 : 110); index++) {
+  const onLeft = Math.random() < 0.5;
+  const x = THREE.MathUtils.randFloat(7, 33) * (onLeft ? -1 : 1);
+
+  atmospherePositions.push(
+    x,
+    THREE.MathUtils.randFloat(0.35, 3.4),
+    THREE.MathUtils.randFloatSpread(BASE_LENGTH - 8)
+  );
+}
+
+atmosphereGeometry.setAttribute(
+  "position",
+  new THREE.Float32BufferAttribute(atmospherePositions, 3)
+);
+
+const atmosphere = new THREE.Points(
+  atmosphereGeometry,
+  new THREE.PointsMaterial({
+    color: 0xffd293,
+    size: isMobile ? 0.035 : 0.045,
+    transparent: true,
+    opacity: 0.32,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    sizeAttenuation: true
+  })
+);
+
+scene.add(atmosphere);
 
 /* =========================================================
    COLLISION
@@ -431,6 +835,11 @@ function playerCollidesAt(x, z) {
   }
 
   return false;
+}
+
+for (const z of STREET_LIGHT_Z) {
+  createStreetLight(-1, z);
+  createStreetLight(1, z);
 }
 
 /* =========================================================
@@ -507,9 +916,10 @@ function centerAndGround(object) {
 
 const houseMaterial =
   new THREE.MeshStandardMaterial({
-    color: 0xa89f90,
-    roughness: 0.82,
-    metalness: 0.02
+    color: 0xa69c8c,
+    roughness: 0.76,
+    metalness: 0.025,
+    envMapIntensity: 0.48
   });
 
 async function createHouses() {
@@ -945,6 +1355,10 @@ const keys = new Set();
 
 document.addEventListener("keydown", (event) => {
   keys.add(event.code);
+
+  if (event.code === "KeyG" && !event.repeat) {
+    toggleCinematicEffects();
+  }
 });
 
 document.addEventListener("keyup", (event) => {
@@ -1444,7 +1858,7 @@ async function safeLoad(name, task) {
 }
 
 function loadWorld() {
-  setLoadingText("Завантаження SoftStreer…");
+  setLoadingText("Завантаження SoftStreet…");
 
   safeLoad("Sky", loadSky);
   safeLoad("Grass", loadGrass);
@@ -1473,6 +1887,8 @@ function animate() {
     0.033
   );
 
+  const elapsedTime = clock.elapsedTime;
+
   player.rotation.y = yaw;
   eyePivot.rotation.x = pitch;
 
@@ -1480,7 +1896,16 @@ function animate() {
   updateWalkingBob(deltaTime);
   updateDrinking();
 
-  renderer.render(scene, camera);
+  atmosphere.rotation.y += deltaTime * 0.0025;
+  atmosphere.position.y =
+    Math.sin(elapsedTime * 0.28) * 0.025;
+
+  lampGlassMaterial.emissiveIntensity =
+    4.15 + Math.sin(elapsedTime * 1.7) * 0.12;
+
+  cinematicPass.uniforms.uTime.value = elapsedTime;
+
+  composer.render(deltaTime);
 }
 
 animate();
@@ -1499,6 +1924,8 @@ window.addEventListener("resize", () => {
     window.innerWidth,
     window.innerHeight
   );
+
+  updatePostProcessingSize();
 });
 
 /*
