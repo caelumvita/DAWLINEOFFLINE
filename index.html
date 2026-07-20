@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="uk">
 <head>
@@ -9,9 +10,9 @@
     maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
   >
 
-  <title>SoftStreer🍻</title>
+  <title>SoftStreet🍻 — Cinematic Lighting</title>
 
-  <link rel="stylesheet" href="./style.css?v=14">
+  <link rel="stylesheet" href="./style.css?v=15">
   <link rel="manifest" href="./manifest.json">
 
   <script type="importmap">
@@ -26,12 +27,12 @@
 
 <body>
   <div id="loadingScreen">
-    <div id="gameTitle">SoftStreer🍻</div>
+    <div id="gameTitle">SoftStreet🍻</div>
     <div id="loadingText">Завантаження світу…</div>
   </div>
 
   <div id="desktopHint">
-    Натисни на гру · WASD — ходити · мишка — камера · ЛКМ — пити
+    Натисни на гру · WASD — ходити · мишка — камера · ЛКМ — пити · G — графіка
   </div>
 
   <div id="mobileHint">
@@ -50,6 +51,15 @@
     </button>
   </div>
 
- <script type="module" src="./main.js?v=14"></script>
+  <button
+    id="graphicsButton"
+    type="button"
+    aria-label="Перемкнути якість графіки"
+    aria-pressed="true"
+  >
+    ✨ Кіно
+  </button>
+
+ <script type="module" src="./main.js?v=15"></script>
 </body>
 </html>
