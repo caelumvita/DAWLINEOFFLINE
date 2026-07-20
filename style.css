@@ -110,6 +110,58 @@ canvas {
   display: none;
 }
 
+#graphicsButton {
+  position: fixed;
+  top: calc(18px + env(safe-area-inset-top));
+  right: calc(18px + env(safe-area-inset-right));
+
+  z-index: 60;
+
+  min-width: 100px;
+  padding: 9px 14px;
+
+  border: 1px solid rgba(255, 224, 170, 0.34);
+  border-radius: 999px;
+
+  color: rgba(255, 249, 235, 0.96);
+  background:
+    linear-gradient(
+      145deg,
+      rgba(70, 55, 36, 0.72),
+      rgba(10, 17, 22, 0.72)
+    );
+
+  backdrop-filter: blur(9px);
+  box-shadow:
+    0 8px 28px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.10);
+
+  font: 700 13px/1 Arial, sans-serif;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+#graphicsButton:hover {
+  border-color: rgba(255, 224, 170, 0.62);
+  background:
+    linear-gradient(
+      145deg,
+      rgba(92, 67, 38, 0.82),
+      rgba(13, 23, 29, 0.82)
+    );
+}
+
+#graphicsButton:active {
+  transform: scale(0.96);
+}
+
+#graphicsButton[aria-pressed="false"] {
+  border-color: rgba(190, 220, 235, 0.27);
+  color: rgba(228, 241, 247, 0.91);
+  background: rgba(8, 16, 21, 0.68);
+}
+
 #lookZone {
   position: fixed;
 
@@ -224,5 +276,13 @@ canvas {
 
   #mobileControls {
     display: block;
+  }
+
+  #graphicsButton {
+    top: calc(12px + env(safe-area-inset-top));
+    right: calc(12px + env(safe-area-inset-right));
+    min-width: 88px;
+    padding: 8px 11px;
+    font-size: 12px;
   }
 }
